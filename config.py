@@ -52,6 +52,13 @@ BASE_DOMAIN = get_config_val("BASE_DOMAIN", "apps.local")
 APP_PORT_MIN = int(get_config_val("APP_PORT_MIN", "8100"))
 APP_PORT_MAX = int(get_config_val("APP_PORT_MAX", "8900"))
 
+# Cloudflare Pages (public hosting for uploaded static sites)
+CLOUDFLARE_ACCOUNT_ID = get_config_val("CLOUDFLARE_ACCOUNT_ID", "")
+CLOUDFLARE_API_TOKEN = get_config_val("CLOUDFLARE_API_TOKEN", "")
+CLOUDFLARE_PAGES_ENABLED = get_config_val("CLOUDFLARE_PAGES_ENABLED", "true").lower() in (
+    "1", "true", "yes", "on"
+)
+
 # Telegram Bot
 TELEGRAM_BOT_TOKEN = get_config_val("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_BOT_USERNAME = get_config_val("TELEGRAM_BOT_USERNAME", "EliteCloudManagerBot")
@@ -93,3 +100,4 @@ def get_node_executable() -> str:
 
 PYTHON_BIN = get_python_executable()
 NODE_BIN = get_node_executable()
+

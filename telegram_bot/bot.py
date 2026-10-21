@@ -21,11 +21,48 @@ from elite_cloud.orchestrator.zip_validator import ZipValidator, ZipSecurityErro
 from elite_cloud.orchestrator.deployment_queue import orchestrator
 from elite_cloud.orchestrator.process_manager import process_manager
 from elite_cloud.orchestrator.metrics_collector import MetricsCollector
+from elite_cloud.orchestrator.cloudflare_pages import cloudflare_pages, CloudflarePagesError
 
 logger = logging.getLogger("elite_cloud.telegram")
 
 def get_linked_user(chat_id: int) -> Optional[Dict[str, Any]]:
     return db.get_user_by_telegram_chat_id(chat_id)
+
+def is_project_active(project: Dict[str, Any]) -> bool:
+    if project.get("cloudflare_url"):
+        return project.get("status") == "running"
+    return process_manager.is_running(project["_id"])
+
+def deploy_static_project(project: Dict[str, Any]) -> Dict[str, str]:
+    workspace = WORKSPACES_DIR / project["_id"]
+    publish_directory = workspace
+    if project.get("framework") != "static-html":
+        for output_name in ("dist", "build"):
+            candidate = workspace / output_name
+            if (candidate / "index.html").is_file():
+                publish_directory = candidate
+                break
+        else:
+            raise CloudflarePagesError(
+                "This frontend needs a compiled dist/ or build/ folder before it can be "
+                "published to Cloudflare Pages."
+            )
+    result = cloudflare_pages.deploy(
+        publish_directory,
+        project.get("cloudflare_project_name") or project["slug"],
+    )
+    db.update_project(project["_id"], {
+        "status": "running",
+        "cloudflare_url": result["url"],
+        "cloudflare_project_name": result["project_name"],
+        "cloudflare_deployment_id": result["deployment_id"],
+        "listening_port": None,
+    })
+    db.add_log(
+        project["_id"], result["deployment_id"] or None, "INFO", "system",
+        f"Cloudflare Pages deployment is live at {result['url']}",
+    )
+    return result
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -94,7 +131,7 @@ async def cmd_projects(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text_lines = ["📂 *Your Applications & Bots:*\n"]
     for p in projects:
         slug = p.get("slug")
-        status_emoji = "🟢" if process_manager.is_running(p["_id"]) else "🔴"
+        status_emoji = "🟢" if is_project_active(p) else "🔴"
         text_lines.append(f"{status_emoji} *{p.get('name')}* (`{slug}`) - {p.get('runtime', '').upper()} / {p.get('framework', '')}")
         keyboard.append([
             InlineKeyboardButton(f"{status_emoji} {p.get('name')}", callback_data=f"proj_{p['_id']}")
@@ -196,10 +233,21 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 description=v.description
             )
 
-        # Auto Deploy
-        # Deployment performs filesystem, package and process work. Run it off
-        # the Telegram event loop so commands and status updates stay responsive.
-        await asyncio.to_thread(orchestrator.deploy_project, project_id)
+        # Static sites are published to Cloudflare Pages so the returned URL is
+        # internet-accessible. Other runtimes continue through the local process
+        # orchestrator. Both paths run off the Telegram event loop.
+        public_url = None
+        if detection.process_type == "static":
+            if not cloudflare_pages.configured:
+                raise CloudflarePagesError(
+                    "Static hosting needs Cloudflare Pages configuration. Add "
+                    "CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to Streamlit Secrets."
+                )
+            db.add_log(project_id, None, "INFO", "build", "Publishing static site to Cloudflare Pages...")
+            deployed = await asyncio.to_thread(deploy_static_project, project_data)
+            public_url = deployed["url"]
+        else:
+            await asyncio.to_thread(orchestrator.deploy_project, project_id)
 
         # Send deployment summary
         msg = (
@@ -210,13 +258,19 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• **Process Type:** `{detection.process_type.upper()}`\n"
             f"• **Start Command:** `{detection.start_command}`\n"
         )
-        if detection.listening_port:
+        if public_url:
+            msg += f"• **Public URL:** `{public_url}`\n"
+        elif detection.listening_port:
             msg += f"• **Subdomain URL:** `http://{slug}.{BASE_DOMAIN}`\n"
 
-        keyboard = [
-            [InlineKeyboardButton("📜 View Logs", callback_data=f"logs_{project_id}")],
-            [InlineKeyboardButton("🛑 Stop", callback_data=f"stop_{project_id}"), InlineKeyboardButton("🔄 Restart", callback_data=f"restart_{project_id}")]
-        ]
+        keyboard = [[InlineKeyboardButton("📜 View Logs", callback_data=f"logs_{project_id}")]]
+        if public_url:
+            keyboard.append([InlineKeyboardButton("☁️ Redeploy", callback_data=f"restart_{project_id}")])
+        else:
+            keyboard.append([
+                InlineKeyboardButton("🛑 Stop", callback_data=f"stop_{project_id}"),
+                InlineKeyboardButton("🔄 Restart", callback_data=f"restart_{project_id}"),
+            ])
         await status_msg.edit_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
     except ZipSecurityError as z_err:
@@ -240,7 +294,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("Please link your account first.")
             return
         projects = db.list_projects(owner_id=user["_id"] if user.get("role") != "admin" else None)
-        keyboard = [[InlineKeyboardButton(f"{'🟢' if process_manager.is_running(p['_id']) else '🔴'} {p['name']}", callback_data=f"proj_{p['_id']}")] for p in projects]
+        keyboard = [[InlineKeyboardButton(f"{'🟢' if is_project_active(p) else '🔴'} {p['name']}", callback_data=f"proj_{p['_id']}")] for p in projects]
         await query.edit_message_text("📂 *Select a Project:*", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif data.startswith("proj_"):
@@ -249,7 +303,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not p:
             await query.edit_message_text("Project not found.")
             return
-        is_running = process_manager.is_running(project_id)
+        is_running = is_project_active(p)
         status_str = "🟢 RUNNING" if is_running else "🔴 STOPPED"
         msg = (
             f"📦 *{p.get('name')}*\n"
@@ -257,22 +311,29 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• Runtime: `{p.get('runtime')}` / `{p.get('framework')}`\n"
             f"• Start: `{p.get('start_command')}`\n"
         )
-        if p.get("listening_port"):
+        if p.get("cloudflare_url"):
+            msg += f"• Public URL: `{p.get('cloudflare_url')}`\n"
+        elif p.get("listening_port"):
             msg += f"• URL: `http://{p.get('subdomain')}.{BASE_DOMAIN}`\n"
 
-        keyboard = [
-            [InlineKeyboardButton("📜 Logs", callback_data=f"logs_{project_id}")],
-            [
+        keyboard = [[InlineKeyboardButton("📜 Logs", callback_data=f"logs_{project_id}")]]
+        if p.get("cloudflare_url"):
+            keyboard.append([InlineKeyboardButton("☁️ Redeploy", callback_data=f"restart_{project_id}")])
+        else:
+            keyboard.append([
                 InlineKeyboardButton("▶️ Start", callback_data=f"start_{project_id}") if not is_running else InlineKeyboardButton("🛑 Stop", callback_data=f"stop_{project_id}"),
                 InlineKeyboardButton("🔄 Restart", callback_data=f"restart_{project_id}")
-            ],
-            [InlineKeyboardButton("🔙 Back to Projects", callback_data="list_projects")]
-        ]
+            ])
+        keyboard.append([InlineKeyboardButton("🔙 Back to Projects", callback_data="list_projects")])
         await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif data.startswith("start_"):
         pid = data.split("start_", 1)[1]
-        await asyncio.to_thread(orchestrator.deploy_project, pid)
+        p = db.get_project(pid)
+        if p and p.get("process_type") == "static":
+            await asyncio.to_thread(deploy_static_project, p)
+        else:
+            await asyncio.to_thread(orchestrator.deploy_project, pid)
         await query.edit_message_text("▶️ *Application started!*", parse_mode="Markdown")
 
     elif data.startswith("stop_"):
@@ -282,8 +343,16 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("restart_"):
         pid = data.split("restart_", 1)[1]
-        await asyncio.to_thread(orchestrator.restart_project, pid)
-        await query.edit_message_text("🔄 *Application restarted!*", parse_mode="Markdown")
+        p = db.get_project(pid)
+        if p and p.get("process_type") == "static":
+            result = await asyncio.to_thread(deploy_static_project, p)
+            await query.edit_message_text(
+                f"☁️ *Site redeployed!*\n\nPublic URL: `{result['url']}`",
+                parse_mode="Markdown",
+            )
+        else:
+            await asyncio.to_thread(orchestrator.restart_project, pid)
+            await query.edit_message_text("🔄 *Application restarted!*", parse_mode="Markdown")
 
     elif data.startswith("logs_"):
         pid = data.split("logs_", 1)[1]
@@ -305,3 +374,4 @@ def create_telegram_bot() -> Optional[Application]:
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(CallbackQueryHandler(callback_router))
     return app
+
