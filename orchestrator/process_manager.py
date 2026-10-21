@@ -44,7 +44,8 @@ class ProcessManager:
         start_command: str,
         workspace_dir: Path,
         port: Optional[int] = None,
-        additional_env: Optional[Dict[str, str]] = None
+        additional_env: Optional[Dict[str, str]] = None,
+        restart_count: int = 0
     ) -> ProcessInstance:
         with self.lock:
             # Stop existing instance if running
@@ -92,6 +93,7 @@ class ProcessManager:
                 env=env,
                 port=port
             )
+            instance.restart_count = restart_count
 
             # Launch process
             try:
@@ -260,7 +262,8 @@ class ProcessManager:
                                     instance.deployment_id,
                                     instance.command,
                                     instance.cwd,
-                                    port=instance.port
+                                    port=instance.port,
+                                    restart_count=instance.restart_count
                                 )
                             except Exception as re_err:
                                 db.add_log(project_id, instance.deployment_id, "ERROR", "system", f"Auto-restart failed: {re_err}")

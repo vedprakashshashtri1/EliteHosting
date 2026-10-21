@@ -26,6 +26,31 @@ class ReverseProxyManager:
         return False
 
     @staticmethod
+    def register_domain(
+        project_id: str,
+        domain: str,
+        is_subdomain: bool = True,
+        target_port: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Create or update the routing record used by proxy config generators."""
+        existing = db.get_domain_mapping(domain)
+        if existing and existing.get("project_id") != project_id:
+            raise ValueError(f"Domain is already assigned: {domain}")
+
+        db.register_domain(
+            project_id=project_id,
+            domain=domain,
+            is_subdomain=is_subdomain,
+            target_port=target_port
+        )
+        return db.get_domain_mapping(domain) or {
+            "project_id": project_id,
+            "domain": domain,
+            "is_subdomain": is_subdomain,
+            "target_port": target_port
+        }
+
+    @staticmethod
     def generate_caddyfile() -> str:
         """Generates dynamic Caddyfile config for all active domain mappings."""
         lines = [

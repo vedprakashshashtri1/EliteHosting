@@ -14,8 +14,15 @@ class NodejsDetector(BaseDetector):
     def detect(self, project_path: Path) -> Optional[DetectionResult]:
         pkg_file = project_path / "package.json"
         js_files = list(project_path.glob("*.js")) + list(project_path.glob("*.ts"))
+        index_html = project_path / "index.html"
         
         if not pkg_file.exists() and not js_files:
+            return None
+
+        # A dependency-free static website may keep browser JavaScript at the
+        # project root. Without package.json there is no evidence that the JS
+        # file is a Node.js entry point, so let FrontendDetector handle it.
+        if index_html.exists() and not pkg_file.exists():
             return None
 
         # Exclude pure static frontends (handled by FrontendDetector) if it's vite/react without server

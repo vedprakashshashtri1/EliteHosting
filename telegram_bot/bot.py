@@ -3,6 +3,7 @@ import io
 import time
 import uuid
 import logging
+import asyncio
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -196,7 +197,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         # Auto Deploy
-        orchestrator.deploy_project(project_id)
+        # Deployment performs filesystem, package and process work. Run it off
+        # the Telegram event loop so commands and status updates stay responsive.
+        await asyncio.to_thread(orchestrator.deploy_project, project_id)
 
         # Send deployment summary
         msg = (
@@ -217,9 +220,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
     except ZipSecurityError as z_err:
-        await status_msg.edit_text(f"❌ *Archive Security Error:* {z_err}", parse_mode="Markdown")
+        await status_msg.edit_text(f"❌ Archive security error:\n{z_err}")
     except Exception as e:
-        await status_msg.edit_text(f"❌ *Deployment Failed:* {e}", parse_mode="Markdown")
+        logger.exception("Telegram deployment failed for %s", doc.file_name)
+        await status_msg.edit_text(f"❌ Deployment failed:\n{e}")
     finally:
         if temp_zip.exists():
             temp_zip.unlink()
@@ -268,7 +272,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("start_"):
         pid = data.split("start_", 1)[1]
-        orchestrator.deploy_project(pid)
+        await asyncio.to_thread(orchestrator.deploy_project, pid)
         await query.edit_message_text("▶️ *Application started!*", parse_mode="Markdown")
 
     elif data.startswith("stop_"):
@@ -278,7 +282,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("restart_"):
         pid = data.split("restart_", 1)[1]
-        orchestrator.restart_project(pid)
+        await asyncio.to_thread(orchestrator.restart_project, pid)
         await query.edit_message_text("🔄 *Application restarted!*", parse_mode="Markdown")
 
     elif data.startswith("logs_"):
