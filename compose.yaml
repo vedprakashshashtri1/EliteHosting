@@ -1,0 +1,73 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:6.0
+    container_name: elite_cloud_mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password123
+    volumes:
+      - mongo_data:/data/db
+
+  api:
+    build:
+      context: ..
+      dockerfile: elite_cloud/docker/Dockerfile.api
+    container_name: elite_cloud_api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - MONGO_URI=mongodb://admin:password123@mongodb:27017/elite_cloud?authSource=admin
+      - SECRET_KEY=generate_your_production_secret_key_here
+      - FERNET_KEY=generate_your_fernet_key_here
+      - API_PORT=8000
+      - BASE_DOMAIN=apps.example.com
+    depends_on:
+      - mongodb
+    volumes:
+      - workspaces_data:/app/elite_cloud/data/workspaces
+      - logs_data:/app/elite_cloud/data/logs
+
+  dashboard:
+    build:
+      context: ..
+      dockerfile: elite_cloud/docker/Dockerfile.dashboard
+    container_name: elite_cloud_dashboard
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    environment:
+      - API_URL=http://api:8000
+      - MONGO_URI=mongodb://admin:password123@mongodb:27017/elite_cloud?authSource=admin
+    depends_on:
+      - api
+    volumes:
+      - workspaces_data:/app/elite_cloud/data/workspaces
+      - logs_data:/app/elite_cloud/data/logs
+
+  caddy:
+    image: caddy:2.7-alpine
+    container_name: elite_cloud_caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+      - dashboard
+
+volumes:
+  mongo_data:
+  workspaces_data:
+  logs_data:
+  caddy_data:
+  caddy_config:
