@@ -41,6 +41,32 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Auto-start Telegram management bot in background thread if configured
+@st.cache_resource
+def start_telegram_bot_background():
+    from elite_cloud.config import TELEGRAM_BOT_TOKEN
+    if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN.startswith("123456789:ABCdef"):
+        return False
+    import threading
+    import asyncio
+
+    def _run():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        from elite_cloud.telegram_bot.bot import create_telegram_bot
+        bot = create_telegram_bot()
+        if bot:
+            try:
+                bot.run_polling(close_loop=False)
+            except Exception as e:
+                print("Telegram bot polling notice:", e)
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return True
+
+start_telegram_bot_background()
+
 # Load theme CSS
 css_path = Path(__file__).parent / "styles" / "theme.css"
 if css_path.exists():
