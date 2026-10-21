@@ -54,12 +54,12 @@ def start_telegram_bot_background():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         from elite_cloud.telegram_bot.bot import create_telegram_bot
-        bot = create_telegram_bot()
-        if bot:
-            try:
-                bot.run_polling(close_loop=False)
-            except Exception as e:
-                print("Telegram bot polling notice:", e)
+        try:
+            bot = create_telegram_bot()
+            if bot:
+                bot.run_polling(stop_signals=None, close_loop=False)
+        except Exception as e:
+            print("Telegram bot notice (check if BOT_TOKEN is valid):", e)
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
