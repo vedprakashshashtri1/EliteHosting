@@ -1,11 +1,25 @@
 import sys
+import types
 from pathlib import Path
 
-# Add project root to sys.path so modules resolve cleanly
+# Add project directories to sys.path so modules resolve cleanly on both local and Streamlit Cloud
 CURRENT_FILE = Path(__file__).resolve()
-PROJECT_DIR = CURRENT_FILE.parent.parent.parent
-if str(PROJECT_DIR) not in sys.path:
-    sys.path.insert(0, str(PROJECT_DIR))
+DASHBOARD_DIR = CURRENT_FILE.parent
+PARENT_DIR = DASHBOARD_DIR.parent
+GRANDPARENT_DIR = PARENT_DIR.parent
+
+for candidate in (PARENT_DIR, GRANDPARENT_DIR, DASHBOARD_DIR):
+    if str(candidate) not in sys.path:
+        sys.path.insert(0, str(candidate))
+
+# If 'elite_cloud' is not importable directly (e.g. repo root contains modules directly like on Streamlit Cloud),
+# dynamically alias PARENT_DIR as 'elite_cloud' in sys.modules so all 'from elite_cloud...' imports resolve seamlessly!
+try:
+    import elite_cloud
+except ImportError:
+    elite_cloud_pkg = types.ModuleType("elite_cloud")
+    elite_cloud_pkg.__path__ = [str(PARENT_DIR)]
+    sys.modules["elite_cloud"] = elite_cloud_pkg
 
 import streamlit as st
 from elite_cloud.storage.db import db
@@ -186,3 +200,4 @@ elif page == "Telegram Link":
     render_telegram_link(user)
 elif page == "Admin Panel":
     render_admin_panel(user)
+
